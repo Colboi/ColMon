@@ -1,0 +1,16 @@
+{
+  "separator": "  ·  ",
+  "horizontalPadding": 10,
+  "offsetX": -220,
+  "offsetY": 0,
+  "sources": [
+    {
+      "name": "time",
+      "type": "clock",
+      "prefix": "9% ",
+      "format": "HH:mm:ss",
+      "pollMilliseconds": 1000,
+      "timeoutMilliseconds": 500
+    }
+  ]
+}

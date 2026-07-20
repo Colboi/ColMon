@@ -1,0 +1,15 @@
+{
+  "separator": "  ·  ",
+  "horizontalPadding": 10,
+  "offsetX": 0,
+  "offsetY": 0,
+  "sources": [
+    {
+      "name": "codex-weekly",
+      "type": "codex-weekly",
+      "pollMilliseconds": 60000,
+      "timeoutMilliseconds": 20000,
+      "staleAfterMilliseconds": 600000
+    }
+  ]
+}
