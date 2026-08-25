@@ -1,8 +1,17 @@
 {
+  "title": "Codex weekly",
   "separator": "  ·  ",
   "horizontalPadding": 10,
   "offsetX": 0,
   "offsetY": 0,
+  "showTokensToday": true,
+  "tokensTodayTitle": "Tokens today",
+  "tokensTodayPollMilliseconds": 60000,
+  "showPomodoro": true,
+  "pomodoroAutoRest": true,
+  "pomodoroAutoNextCycle": true,
+  "pomodoroWorkMinutes": 25,
+  "pomodoroRestMinutes": 5,
   "sources": [
     {
       "name": "codex-weekly",

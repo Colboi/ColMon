@@ -6,9 +6,18 @@ using System.Text.Json;
 
 namespace Colmon;
 
-internal sealed class CodexAppServerSource(SourceConfig config) : InfoSource(config)
+internal sealed record CodexRateLimitReading(
+    decimal RemainingPercent,
+    decimal UsedPercent,
+    decimal WindowDurationMinutes,
+    string ResetAt,
+    string? LimitId,
+    string? PlanType);
+
+internal sealed class CodexAppServerSource(SourceConfig config, JsonLog? log = null) : InfoSource(config)
 {
     private const int WeeklyWindowMinutes = 7 * 24 * 60;
+    private static readonly string[] ApprovalPolicies = ["never", "untrusted"];
 
     public override async Task<InfoSample> ReadAsync(CancellationToken cancellationToken)
     {
@@ -19,20 +28,45 @@ internal sealed class CodexAppServerSource(SourceConfig config) : InfoSource(con
         Exception? lastError = null;
         foreach (var candidate in candidates)
         {
-            try
+            foreach (var approvalPolicy in ApprovalPolicies)
             {
-                var remaining = await ReadRemainingPercentAsync(candidate, cancellationToken);
-                return Sample(remaining.ToString("0.###", CultureInfo.InvariantCulture) + "%");
+                try
+                {
+                    var reading = await ReadQuotaAsync(candidate, approvalPolicy, cancellationToken, log);
+                    log?.Write("codex-weekly.read", new
+                    {
+                        candidate = SafeCandidateName(candidate),
+                        approvalPolicy,
+                        reading.RemainingPercent,
+                        reading.UsedPercent,
+                        reading.WindowDurationMinutes,
+                        reading.ResetAt,
+                        reading.LimitId,
+                        reading.PlanType
+                    });
+                    return Sample(reading.RemainingPercent.ToString("0.###", CultureInfo.InvariantCulture) + "%");
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception exception)
+                {
+                    lastError = exception;
+                    log?.Write("codex-weekly.candidate.failed", new
+                    {
+                        candidate = SafeCandidateName(candidate),
+                        approvalPolicy,
+                        error = SafeError(exception)
+                    });
+
+                    if (!ShouldTryLegacyApprovalPolicy(exception, approvalPolicy))
+                        break;
+                }
             }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (Exception exception)
-            {
-                lastError = exception;
-                if (!string.IsNullOrWhiteSpace(Config.Command)) break;
-            }
+
+            if (!string.IsNullOrWhiteSpace(Config.Command))
+                break;
         }
 
         throw new InvalidOperationException(
@@ -40,18 +74,39 @@ internal sealed class CodexAppServerSource(SourceConfig config) : InfoSource(con
             lastError);
     }
 
-    internal static decimal ParseRemainingPercent(JsonElement result)
+    internal static decimal ParseRemainingPercent(JsonElement result) => ParseQuotaReading(result).RemainingPercent;
+
+    internal static CodexRateLimitReading ParseQuotaReading(JsonElement result)
     {
         var snapshot = SelectRateLimitSnapshot(result);
         var weekly = SelectWeeklyWindow(snapshot);
         if (!TryDecimal(weekly, out var usedPercent, "usedPercent", "used_percent"))
-            throw new InvalidDataException("Codex weekly window did not include usedPercent.");
-        return Math.Clamp(100M - usedPercent, 0M, 100M);
+        {
+            if (!TryDecimal(weekly, out var remainingPercent, "remainingPercent", "remaining_percent"))
+                throw new InvalidDataException("Codex weekly window did not include usedPercent.");
+
+            usedPercent = 100M - remainingPercent;
+        }
+
+        var duration = TryDecimal(weekly, out var windowDuration, "windowDurationMins", "window_duration_mins")
+            ? windowDuration
+            : 0M;
+        return new CodexRateLimitReading(
+            Math.Clamp(100M - usedPercent, 0M, 100M),
+            usedPercent,
+            duration,
+            Text(weekly, "resetsAt", "resets_at"),
+            TextOrNull(snapshot, "limitId", "limit_id"),
+            TextOrNull(snapshot, "planType", "plan_type"));
     }
 
-    private static async Task<decimal> ReadRemainingPercentAsync(string command, CancellationToken cancellationToken)
+    private static async Task<CodexRateLimitReading> ReadQuotaAsync(
+        string command,
+        string approvalPolicy,
+        CancellationToken cancellationToken,
+        JsonLog? log)
     {
-        using var process = new Process { StartInfo = StartInfo(command), EnableRaisingEvents = true };
+        using var process = new Process { StartInfo = StartInfo(command, approvalPolicy), EnableRaisingEvents = true };
         try
         {
             if (!process.Start()) throw new InvalidOperationException("Codex App Server did not start.");
@@ -62,6 +117,10 @@ internal sealed class CodexAppServerSource(SourceConfig config) : InfoSource(con
         }
 
         var stderrTask = process.StandardError.ReadToEndAsync();
+        CodexRateLimitReading? reading = null;
+        Exception? failure = null;
+        string stderr = "";
+
         try
         {
             process.StandardInput.AutoFlush = true;
@@ -70,17 +129,48 @@ internal sealed class CodexAppServerSource(SourceConfig config) : InfoSource(con
                 clientInfo = new { name = "colmon", title = "Colmon", version = "0.1.0" }
             }, cancellationToken);
             await SendNotificationAsync(process, "initialized", new { }, cancellationToken);
-            var result = await SendRequestAsync(process, 2, "account/rateLimits/read", null, cancellationToken);
+
+            var rateLimitResult = await SendRequestAsync(
+                process, 2, "account/rateLimits/read", null, cancellationToken);
+            JsonElement? accountResult = null;
             try
             {
-                return ParseRemainingPercent(result);
+                accountResult = await SendRequestAsync(process, 3, "account/read", new { }, cancellationToken);
             }
-            catch (InvalidDataException)
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                log?.Write("codex-weekly.account.read.error", new
+                {
+                    candidate = SafeCandidateName(command),
+                    approvalPolicy,
+                    error = SafeError(exception)
+                });
+            }
+
+            if (!TryParseQuotaReading(rateLimitResult, out reading) &&
+                ShouldRetryEmptyQuota(rateLimitResult, accountResult))
             {
                 await Task.Delay(300, cancellationToken);
-                result = await SendRequestAsync(process, 3, "account/rateLimits/read", null, cancellationToken);
-                return ParseRemainingPercent(result);
+                var retryResult = await SendRequestAsync(
+                    process, 4, "account/rateLimits/read", null, cancellationToken);
+                reading = ParseQuotaReading(retryResult);
             }
+            else if (reading is null)
+            {
+                throw new InvalidDataException("Codex quota response did not include a usable weekly window.");
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            failure = exception;
         }
         finally
         {
@@ -90,15 +180,67 @@ internal sealed class CodexAppServerSource(SourceConfig config) : InfoSource(con
                 catch (InvalidOperationException) { }
                 catch (Win32Exception) { }
             }
+
             try { await process.WaitForExitAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(2)); }
             catch (TimeoutException) { }
             catch (Exception) when (process.HasExited || cancellationToken.IsCancellationRequested) { }
-            try { await stderrTask.WaitAsync(TimeSpan.FromSeconds(1)); }
+
+            try { stderr = await stderrTask.WaitAsync(TimeSpan.FromSeconds(1)); }
             catch (TimeoutException) { }
+        }
+
+        if (failure is not null)
+            throw EnrichProcessFailure(failure, stderr);
+        return reading ?? throw new InvalidDataException("Codex App Server returned no quota reading.");
+    }
+
+    private static bool TryParseQuotaReading(JsonElement result, out CodexRateLimitReading? reading)
+    {
+        try
+        {
+            reading = ParseQuotaReading(result);
+            return true;
+        }
+        catch (InvalidDataException)
+        {
+            reading = null;
+            return false;
         }
     }
 
-    private static ProcessStartInfo StartInfo(string command)
+    private static bool ShouldRetryEmptyQuota(JsonElement rateLimitResult, JsonElement? accountResult)
+    {
+        if (HasAnyWindows(rateLimitResult) || accountResult is not { } account)
+            return false;
+
+        var accountValue = Property(account, "account");
+        if (accountValue is not { ValueKind: JsonValueKind.Object } || !HasAccountIdentity(accountValue.Value))
+            return false;
+
+        var planType = Text(accountValue.Value, "planType", "plan_type").ToLowerInvariant();
+        return !planType.Contains("usage", StringComparison.Ordinal) &&
+               !planType.Contains("cbp", StringComparison.Ordinal) &&
+               !planType.Contains("business", StringComparison.Ordinal);
+    }
+
+    private static bool HasAccountIdentity(JsonElement account)
+    {
+        foreach (var name in new[] { "id", "email", "planType", "plan_type", "type" })
+        {
+            if (account.TryGetProperty(name, out var value) &&
+                value.ValueKind == JsonValueKind.String &&
+                !string.IsNullOrWhiteSpace(value.GetString()))
+                return true;
+        }
+        return false;
+    }
+
+    private static bool ShouldTryLegacyApprovalPolicy(Exception exception, string approvalPolicy) =>
+        approvalPolicy == "never" &&
+        exception.Message.Contains("invalid value", StringComparison.OrdinalIgnoreCase) &&
+        exception.Message.Contains("approval", StringComparison.OrdinalIgnoreCase);
+
+    private static ProcessStartInfo StartInfo(string command, string approvalPolicy)
     {
         var isCommandScript = command.EndsWith(".cmd", StringComparison.OrdinalIgnoreCase) ||
                               command.EndsWith(".bat", StringComparison.OrdinalIgnoreCase);
@@ -114,17 +256,17 @@ internal sealed class CodexAppServerSource(SourceConfig config) : InfoSource(con
             StandardOutputEncoding = Encoding.UTF8,
             StandardErrorEncoding = Encoding.UTF8
         };
+        var arguments = new[] { "-s", "read-only", "-a", approvalPolicy, "app-server" };
         if (isCommandScript)
         {
             startInfo.ArgumentList.Add("/d");
             startInfo.ArgumentList.Add("/s");
             startInfo.ArgumentList.Add("/c");
-            startInfo.ArgumentList.Add($"\"{command}\" -s read-only -a untrusted app-server");
+            startInfo.ArgumentList.Add($"\"{command}\" {string.Join(' ', arguments)}");
         }
         else
         {
-            foreach (var argument in new[] { "-s", "read-only", "-a", "untrusted", "app-server" })
-                startInfo.ArgumentList.Add(argument);
+            foreach (var argument in arguments) startInfo.ArgumentList.Add(argument);
         }
         return startInfo;
     }
@@ -200,25 +342,37 @@ internal sealed class CodexAppServerSource(SourceConfig config) : InfoSource(con
         JsonElement? secondary = null;
         foreach (var name in new[] { "primary", "secondary" })
         {
-            if (!snapshot.TryGetProperty(name, out var window) || window.ValueKind != JsonValueKind.Object) continue;
+            var window = Property(snapshot, name);
+            if (window is not { ValueKind: JsonValueKind.Object }) continue;
             if (name == "secondary") secondary = window;
-            if (TryDecimal(window, out var minutes, "windowDurationMins", "window_duration_mins") &&
+            if (TryDecimal(window.Value, out var minutes, "windowDurationMins", "window_duration_mins") &&
                 minutes >= WeeklyWindowMinutes)
-                return window;
+                return window.Value;
         }
         return secondary ?? throw new InvalidDataException("Codex quota response did not include a weekly window.");
     }
 
     private static bool HasWindows(JsonElement value) => value.ValueKind == JsonValueKind.Object &&
-        (value.TryGetProperty("primary", out _) || value.TryGetProperty("secondary", out _));
+        (Property(value, "primary") is { ValueKind: JsonValueKind.Object } ||
+         Property(value, "secondary") is { ValueKind: JsonValueKind.Object });
+
+    private static bool HasAnyWindows(JsonElement result)
+    {
+        var direct = Property(result, "rateLimits", "rate_limits");
+        if (direct is { } directValue && HasWindows(directValue)) return true;
+        var byId = Property(result, "rateLimitsByLimitId", "rate_limits_by_limit_id");
+        return byId is { ValueKind: JsonValueKind.Object } &&
+            byId.Value.EnumerateObject().Any(property => HasWindows(property.Value));
+    }
 
     private static string WindowSignature(JsonElement snapshot) => string.Join("|", new[] { "primary", "secondary" }.Select(name =>
     {
-        if (!snapshot.TryGetProperty(name, out var window)) return name + ":none";
+        var window = Property(snapshot, name);
+        if (window is not { } value) return name + ":none";
         return string.Join(":", name,
-            Text(window, "usedPercent", "used_percent"),
-            Text(window, "resetsAt", "resets_at"),
-            Text(window, "windowDurationMins", "window_duration_mins"));
+            Text(value, "usedPercent", "used_percent", "remainingPercent", "remaining_percent"),
+            Text(value, "resetsAt", "resets_at"),
+            Text(value, "windowDurationMins", "window_duration_mins"));
     }));
 
     private static JsonElement? Property(JsonElement value, params string[] names)
@@ -241,6 +395,12 @@ internal sealed class CodexAppServerSource(SourceConfig config) : InfoSource(con
 
     private static string Text(JsonElement value, params string[] names) => Property(value, names)?.ToString() ?? "";
 
+    private static string? TextOrNull(JsonElement value, params string[] names)
+    {
+        var text = Text(value, names);
+        return string.IsNullOrWhiteSpace(text) ? null : text;
+    }
+
     private static string SafeRpcError(JsonElement error)
     {
         var message = error.ValueKind == JsonValueKind.Object && error.TryGetProperty("message", out var value)
@@ -250,6 +410,20 @@ internal sealed class CodexAppServerSource(SourceConfig config) : InfoSource(con
             ? "Codex App Server returned an RPC error."
             : message[..Math.Min(message.Length, 240)];
     }
+
+    private static Exception EnrichProcessFailure(Exception exception, string stderr)
+    {
+        var message = SafeError(exception);
+        if (!string.IsNullOrWhiteSpace(stderr))
+        {
+            var safeStderr = stderr.Replace('\r', ' ').Replace('\n', ' ').Trim();
+            message += $"; stderr: {safeStderr[..Math.Min(safeStderr.Length, 240)]}";
+        }
+        return new InvalidOperationException(message, exception);
+    }
+
+    private static string SafeCandidateName(string candidate) =>
+        string.IsNullOrWhiteSpace(Path.GetFileName(candidate)) ? candidate : Path.GetFileName(candidate);
 
     private static string SafeError(Exception? exception)
     {
@@ -264,29 +438,71 @@ internal static class CodexCommandLocator
     public static IReadOnlyList<string> Find(string? configuredCommand)
     {
         if (!string.IsNullOrWhiteSpace(configuredCommand)) return [configuredCommand];
+
         var candidates = new List<string>();
         Add(candidates, Environment.GetEnvironmentVariable("COLMON_CODEX_COMMAND"));
 
         var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
         AddBinDirectory(candidates, Path.Combine(localAppData, "OpenAI", "Codex", "bin"));
-        var packages = Path.Combine(localAppData, "Packages");
-        try
-        {
-            foreach (var package in Directory.GetDirectories(packages, "OpenAI.Codex_*").OrderByDescending(Path.GetFileName))
-                AddBinDirectory(candidates, Path.Combine(package, "LocalCache", "Local", "OpenAI", "Codex", "bin"));
-        }
-        catch (IOException) { }
-        catch (UnauthorizedAccessException) { }
-
+        AddPackageBinDirectories(candidates, Path.Combine(localAppData, "Packages"));
         Add(candidates, Path.Combine(localAppData, "Programs", "Codex", "resources", "codex.exe"));
+        Add(candidates, Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Codex", "resources", "codex.exe"));
+        Add(candidates, Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Codex", "resources", "codex.exe"));
+        AddWindowsAppsCandidates(candidates, Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles));
+        AddWindowsAppsCandidates(candidates, Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86));
         Add(candidates, Path.Combine(localAppData, "Microsoft", "WindowsApps", "codex.exe"));
         Add(candidates, Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "npm", "codex.cmd"));
         Add(candidates, "codex.exe");
         Add(candidates, "codex.cmd");
         Add(candidates, "codex");
-        return candidates.Where(candidate => !Path.IsPathRooted(candidate) || File.Exists(candidate))
+
+        return candidates
+            .Where(candidate => !Path.IsPathRooted(candidate) || File.Exists(candidate))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
+    }
+
+    private static void AddPackageBinDirectories(List<string> candidates, string packagesRoot)
+    {
+        try
+        {
+            foreach (var package in Directory.GetDirectories(packagesRoot, "OpenAI.Codex_*")
+                         .OrderByDescending(PackageVersion)
+                         .ThenByDescending(Path.GetFileName, StringComparer.OrdinalIgnoreCase))
+                AddBinDirectory(candidates, Path.Combine(package, "LocalCache", "Local", "OpenAI", "Codex", "bin"));
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+    }
+
+    private static void AddWindowsAppsCandidates(List<string> candidates, string programFiles)
+    {
+        if (string.IsNullOrWhiteSpace(programFiles)) return;
+        var windowsApps = Path.Combine(programFiles, "WindowsApps");
+        try
+        {
+            foreach (var package in Directory.GetDirectories(windowsApps, "OpenAI.Codex_*")
+                         .OrderByDescending(PackageVersion)
+                         .ThenByDescending(Path.GetFileName, StringComparer.OrdinalIgnoreCase))
+            {
+                Add(candidates, Path.Combine(package, "app", "resources", "codex.exe"));
+                Add(candidates, Path.Combine(package, "app", "Codex.exe"));
+            }
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+    }
+
+    private static Version PackageVersion(string directory)
+    {
+        var name = Path.GetFileName(directory);
+        const string prefix = "OpenAI.Codex_";
+        if (name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+        {
+            var versionText = name[prefix.Length..].Split('_', 2)[0];
+            if (Version.TryParse(versionText, out var version)) return version;
+        }
+        return new Version(0, 0);
     }
 
     private static void AddBinDirectory(List<string> candidates, string directory)
@@ -294,7 +510,8 @@ internal static class CodexCommandLocator
         Add(candidates, Path.Combine(directory, "codex.exe"));
         try
         {
-            foreach (var versionDirectory in Directory.GetDirectories(directory).OrderByDescending(File.GetLastWriteTimeUtc))
+            foreach (var versionDirectory in Directory.GetDirectories(directory)
+                         .OrderByDescending(File.GetLastWriteTimeUtc))
                 Add(candidates, Path.Combine(versionDirectory, "codex.exe"));
         }
         catch (IOException) { }

@@ -111,9 +111,45 @@ internal static class Program
             ApplicationConfiguration.Initialize();
             var config = AppConfig.Load(options.ConfigPath, log);
             using var coordinator = new SourceCoordinator(config.Sources, log, config.Separator);
+            var tokenTodaySource = new SourceConfig
+            {
+                Name = "codex-tokens-today",
+                Type = "codex-token-today",
+                PollMilliseconds = config.TokensTodayPollMilliseconds,
+                TimeoutMilliseconds = 60_000,
+                StaleAfterMilliseconds = 600_000
+            };
+            using var tokenTodayCoordinator = config.ShowTokensToday
+                ? new SourceCoordinator([tokenTodaySource], log, config.Separator)
+                : null;
             using var context = new ColmonApplicationContext(log);
             context.RegisterTaskbarWindow(new TaskbarHostForm(config, coordinator, options.ArtifactDirectory, log));
+            if (tokenTodayCoordinator is not null)
+            {
+                context.RegisterTaskbarWindow(new TaskbarCountHostForm(
+                    config.TokensTodayTitle,
+                    config.OffsetX,
+                    config.OffsetY,
+                    tokenTodaySource,
+                    tokenTodayCoordinator,
+                    options.ArtifactDirectory,
+                    log));
+            }
+            if (config.ShowPomodoro)
+            {
+                context.RegisterTaskbarWindow(new TaskbarPomodoroHostForm(
+                    config.OffsetX,
+                    config.OffsetY,
+                    new PomodoroOptions(
+                        config.PomodoroAutoRest,
+                        config.PomodoroAutoNextCycle,
+                        config.PomodoroWorkMinutes,
+                        config.PomodoroRestMinutes),
+                    options.ArtifactDirectory,
+                    log));
+            }
             coordinator.Start();
+            tokenTodayCoordinator?.Start();
             context.Start(options.ControlSmoke);
             Application.Run(context);
             return 0;
@@ -144,7 +180,11 @@ internal sealed record AppOptions(
     public static AppOptions Parse(string[] args)
     {
         string? config = null;
-        var artifactDirectory = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "artifacts", "runtime"));
+        var artifactDirectory = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "Colmon",
+            "artifacts",
+            "runtime");
         var probe = false;
         var controlSmoke = false;
         var layoutProbe = false;

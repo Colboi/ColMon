@@ -11,7 +11,6 @@ internal static partial class CodexWeeklyLayout
 
     public static readonly Color NormalColor = Color.FromArgb(0, 120, 215);
     public static readonly Color LowColor = Color.FromArgb(255, 76, 76);
-    public static readonly Color TrackColor = Color.FromArgb(82, 82, 82);
 
     public static decimal? ParseRemainingPercent(string text)
     {
@@ -23,8 +22,7 @@ internal static partial class CodexWeeklyLayout
         return Math.Clamp(value, 0M, 100M);
     }
 
-    public static string FormatRemainingPercent(decimal? value) =>
-        value is null ? "--%" : $"{decimal.Floor(Math.Clamp(value.Value, 0M, 100M)):0}%";
+    public static string FormatRemainingPercent(decimal? value) => TaskbarProgressBar.FormatPercentage(value);
 
     public static bool IsLow(decimal? value) => value is >= 0M and < LowRemainingThreshold;
 

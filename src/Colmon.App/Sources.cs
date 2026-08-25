@@ -79,8 +79,21 @@ internal sealed class SourceCoordinator : IDisposable
     private readonly JsonLog _log;
     private readonly string _separator;
     private readonly List<Task> _workers = [];
+    private readonly object _scheduleLock = new();
+    private TaskCompletionSource _scheduleChanged = NewScheduleSignal();
+    private TimeSpan? _pollIntervalOverride;
 
     public event Action<string>? TextChanged;
+
+    public TimeSpan PollInterval
+    {
+        get
+        {
+            lock (_scheduleLock)
+                return _pollIntervalOverride ??
+                    (_sources.Count == 0 ? TimeSpan.FromMinutes(1) : _sources.Min(source => source.PollInterval));
+        }
+    }
 
     public SourceCoordinator(IEnumerable<SourceConfig> configs, JsonLog log, string separator = "  ·  ")
     {
@@ -88,19 +101,38 @@ internal sealed class SourceCoordinator : IDisposable
         _separator = separator;
         _sources = configs.Select(CreateSource).ToList();
         if (_sources.Count == 0)
-            _sources.Add(new CodexAppServerSource(new SourceConfig
-            {
-                Name = "codex-weekly",
-                Type = "codex-weekly",
-                PollMilliseconds = 60_000,
-                TimeoutMilliseconds = 20_000
-            }));
+                _sources.Add(new CodexAppServerSource(new SourceConfig
+                {
+                    Name = "codex-weekly",
+                    Type = "codex-weekly",
+                    PollMilliseconds = 60_000,
+                    TimeoutMilliseconds = 20_000
+                }, _log));
     }
 
     public void Start()
     {
         foreach (var source in _sources)
             _workers.Add(Task.Run(() => RunSourceAsync(source, _stopping.Token)));
+    }
+
+    public void SetPollInterval(TimeSpan interval)
+    {
+        interval = TimeSpan.FromSeconds(Math.Clamp(
+            interval.TotalSeconds,
+            WindowOptions.MinimumRefreshIntervalSeconds,
+            WindowOptions.MaximumRefreshIntervalSeconds));
+
+        TaskCompletionSource changed;
+        lock (_scheduleLock)
+        {
+            if (_pollIntervalOverride == interval) return;
+            _pollIntervalOverride = interval;
+            changed = _scheduleChanged;
+            _scheduleChanged = NewScheduleSignal();
+        }
+        changed.TrySetResult();
+        _log.Write("source.poll-interval.changed", new { seconds = interval.TotalSeconds });
     }
 
     private async Task RunSourceAsync(IInfoSource source, CancellationToken stoppingToken)
@@ -134,9 +166,14 @@ internal sealed class SourceCoordinator : IDisposable
                 Publish();
             }
 
-            var backoff = failures == 0 ? source.PollInterval : TimeSpan.FromMilliseconds(Math.Min(30_000, source.PollInterval.TotalMilliseconds * Math.Pow(2, Math.Min(failures, 5))));
-            try { await Task.Delay(backoff, stoppingToken); }
-            catch (OperationCanceledException) { break; }
+            TimeSpan baseInterval;
+            lock (_scheduleLock) baseInterval = _pollIntervalOverride ?? source.PollInterval;
+            var backoff = failures == 0 ? baseInterval : TimeSpan.FromMilliseconds(
+                Math.Min(30_000, baseInterval.TotalMilliseconds * Math.Pow(2, Math.Min(failures, 5))));
+            Task scheduleChanged;
+            lock (_scheduleLock) scheduleChanged = _scheduleChanged.Task;
+            try { await Task.WhenAny(Task.Delay(backoff, stoppingToken), scheduleChanged); }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
         }
     }
 
@@ -149,10 +186,14 @@ internal sealed class SourceCoordinator : IDisposable
     internal static bool ShouldRetain(InfoSample previous, DateTimeOffset now, TimeSpan staleAfter) =>
         previous.Text != "--%" && now >= previous.CapturedAt && now - previous.CapturedAt <= staleAfter;
 
-    private static IInfoSource CreateSource(SourceConfig config) => config.Type.ToLowerInvariant() switch
+    private static TaskCompletionSource NewScheduleSignal() =>
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    private IInfoSource CreateSource(SourceConfig config) => config.Type.ToLowerInvariant() switch
     {
         "clock" => new ClockSource(config),
-        "codex" or "codex-weekly" => new CodexAppServerSource(config),
+        "codex" or "codex-weekly" => new CodexAppServerSource(config, _log),
+        "codex-token-today" or "tokens-today" => new CodexTokenTodaySource(config, _log),
         "http" or "http-json" => new HttpTextSource(config),
         "tcp" or "tcp-line" => new TcpLineSource(config),
         _ => throw new InvalidDataException($"Unsupported source type '{config.Type}' for '{config.Name}'.")

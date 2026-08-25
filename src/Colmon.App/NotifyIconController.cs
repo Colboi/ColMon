@@ -8,6 +8,7 @@ internal sealed class NotifyIconController : IDisposable
     private readonly ToolStripMenuItem _visibilityItem = new();
     private readonly ToolStripMenuItem _exitItem = new("退出");
     private readonly NotifyIcon _notifyIcon;
+    private readonly Icon _appIcon;
     private bool _disposed;
 
     public NotifyIconController(TaskbarWindowManager windows, JsonLog log, Action exitRequested)
@@ -28,10 +29,11 @@ internal sealed class NotifyIconController : IDisposable
         _menu.Items.AddRange([_visibilityItem, new ToolStripSeparator(), _exitItem]);
         _menu.Opening += (_, _) => UpdateMenu();
 
+        _appIcon = LoadApplicationIcon(log);
         _notifyIcon = new NotifyIcon
         {
             ContextMenuStrip = _menu,
-            Icon = SystemIcons.Application,
+            Icon = _appIcon,
             Text = "Colmon",
             Visible = true
         };
@@ -61,7 +63,24 @@ internal sealed class NotifyIconController : IDisposable
         _windows.VisibilityChanged -= OnVisibilityChanged;
         _notifyIcon.Visible = false;
         _notifyIcon.Dispose();
+        _appIcon.Dispose();
         _menu.Dispose();
         _log.Write("tray.disposed", new { });
+    }
+
+    private static Icon LoadApplicationIcon(JsonLog log)
+    {
+        var path = Path.Combine(AppContext.BaseDirectory, "colmon.ico");
+        try
+        {
+            var icon = new Icon(path);
+            log.Write("tray.icon.loaded", new { path, icon.Width, icon.Height });
+            return icon;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            log.Write("tray.icon.load.error", new { path, exception.Message });
+            return (Icon)SystemIcons.Application.Clone();
+        }
     }
 }
