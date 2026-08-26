@@ -15,6 +15,7 @@ internal sealed class TaskbarPomodoroHostForm : TaskbarMetricForm
         int offsetX,
         int offsetY,
         PomodoroOptions defaults,
+        int slotIndex,
         string artifactDirectory,
         JsonLog log)
         : base(
@@ -22,7 +23,7 @@ internal sealed class TaskbarPomodoroHostForm : TaskbarMetricForm
             "Pomodoro",
             offsetX,
             offsetY,
-            2,
+            slotIndex,
             "pomodoro.state.json",
             new TaskbarPomodoroDisplay(),
             1,

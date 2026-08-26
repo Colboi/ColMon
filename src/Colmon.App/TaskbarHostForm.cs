@@ -323,6 +323,7 @@ internal sealed class TaskbarCountHostForm : TaskbarMetricForm
         int offsetY,
         SourceConfig source,
         SourceCoordinator coordinator,
+        int slotIndex,
         string artifactDirectory,
         JsonLog log)
         : base(
@@ -330,9 +331,36 @@ internal sealed class TaskbarCountHostForm : TaskbarMetricForm
             title,
             offsetX,
             offsetY,
-            1,
+            slotIndex,
             "tokens-today.state.json",
             new TaskbarCountDisplay(),
+            Math.Max(1, source.PollMilliseconds / 1000),
+            coordinator,
+            artifactDirectory,
+            log)
+    {
+    }
+}
+
+internal sealed class TaskbarCodexLimitHostForm : TaskbarMetricForm
+{
+    public TaskbarCodexLimitHostForm(
+        string title,
+        int offsetX,
+        int offsetY,
+        SourceConfig source,
+        SourceCoordinator coordinator,
+        int slotIndex,
+        string artifactDirectory,
+        JsonLog log)
+        : base(
+            source.Name,
+            title,
+            offsetX,
+            offsetY,
+            slotIndex,
+            $"{source.Name}.state.json",
+            new TaskbarProgressBar(),
             Math.Max(1, source.PollMilliseconds / 1000),
             coordinator,
             artifactDirectory,

@@ -111,6 +111,22 @@ internal static class Program
             ApplicationConfiguration.Initialize();
             var config = AppConfig.Load(options.ConfigPath, log);
             using var coordinator = new SourceCoordinator(config.Sources, log, config.Separator);
+            var configuredCodexCommand = config.Sources
+                .FirstOrDefault(source => source.Type.Equals("codex", StringComparison.OrdinalIgnoreCase) ||
+                    source.Type.Equals("codex-weekly", StringComparison.OrdinalIgnoreCase))?.Command;
+            var fiveHourSource = new SourceConfig
+            {
+                Name = "codex-five-hour",
+                Type = "codex-five-hour",
+                Command = configuredCodexCommand,
+                PollMilliseconds = config.CodexFiveHourPollMilliseconds,
+                TimeoutMilliseconds = 20_000,
+                StaleAfterMilliseconds = 600_000,
+                WindowDurationMinutes = CodexAppServerSource.FiveHourWindowMinutes
+            };
+            using var fiveHourCoordinator = config.ShowCodexFiveHourLimit
+                ? new SourceCoordinator([fiveHourSource], log, config.Separator)
+                : null;
             var tokenTodaySource = new SourceConfig
             {
                 Name = "codex-tokens-today",
@@ -124,6 +140,19 @@ internal static class Program
                 : null;
             using var context = new ColmonApplicationContext(log);
             context.RegisterTaskbarWindow(new TaskbarHostForm(config, coordinator, options.ArtifactDirectory, log));
+            var nextSlotIndex = 1;
+            if (fiveHourCoordinator is not null)
+            {
+                context.RegisterTaskbarWindow(new TaskbarCodexLimitHostForm(
+                    config.CodexFiveHourTitle,
+                    config.OffsetX,
+                    config.OffsetY,
+                    fiveHourSource,
+                    fiveHourCoordinator,
+                    nextSlotIndex++,
+                    options.ArtifactDirectory,
+                    log));
+            }
             if (tokenTodayCoordinator is not null)
             {
                 context.RegisterTaskbarWindow(new TaskbarCountHostForm(
@@ -132,6 +161,7 @@ internal static class Program
                     config.OffsetY,
                     tokenTodaySource,
                     tokenTodayCoordinator,
+                    nextSlotIndex++,
                     options.ArtifactDirectory,
                     log));
             }
@@ -145,10 +175,12 @@ internal static class Program
                         config.PomodoroAutoNextCycle,
                         config.PomodoroWorkMinutes,
                         config.PomodoroRestMinutes),
+                    nextSlotIndex,
                     options.ArtifactDirectory,
                     log));
             }
             coordinator.Start();
+            fiveHourCoordinator?.Start();
             tokenTodayCoordinator?.Start();
             context.Start(options.ControlSmoke);
             Application.Run(context);

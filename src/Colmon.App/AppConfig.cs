@@ -9,6 +9,9 @@ internal sealed class AppConfig
     public int HorizontalPadding { get; init; } = 10;
     public int OffsetX { get; init; }
     public int OffsetY { get; init; }
+    public bool ShowCodexFiveHourLimit { get; init; } = true;
+    public string CodexFiveHourTitle { get; init; } = "Codex 5hlimit";
+    public int CodexFiveHourPollMilliseconds { get; init; } = 60_000;
     public bool ShowTokensToday { get; init; } = true;
     public string TokensTodayTitle { get; init; } = "Tokens today";
     public int TokensTodayPollMilliseconds { get; init; } = 60_000;
@@ -59,4 +62,5 @@ internal sealed class SourceConfig
     public int PollMilliseconds { get; init; } = 1000;
     public int TimeoutMilliseconds { get; init; } = 2000;
     public int StaleAfterMilliseconds { get; init; } = 600_000;
+    public int? WindowDurationMinutes { get; init; }
 }

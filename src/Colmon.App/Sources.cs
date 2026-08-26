@@ -192,7 +192,7 @@ internal sealed class SourceCoordinator : IDisposable
     private IInfoSource CreateSource(SourceConfig config) => config.Type.ToLowerInvariant() switch
     {
         "clock" => new ClockSource(config),
-        "codex" or "codex-weekly" => new CodexAppServerSource(config, _log),
+        "codex" or "codex-weekly" or "codex-five-hour" or "codex-5h" => new CodexAppServerSource(config, _log),
         "codex-token-today" or "tokens-today" => new CodexTokenTodaySource(config, _log),
         "http" or "http-json" => new HttpTextSource(config),
         "tcp" or "tcp-line" => new TcpLineSource(config),

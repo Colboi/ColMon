@@ -16,8 +16,15 @@ internal sealed record CodexRateLimitReading(
 
 internal sealed class CodexAppServerSource(SourceConfig config, JsonLog? log = null) : InfoSource(config)
 {
-    private const int WeeklyWindowMinutes = 7 * 24 * 60;
+    internal const int WeeklyWindowMinutes = 7 * 24 * 60;
+    internal const int FiveHourWindowMinutes = 5 * 60;
     private static readonly string[] ApprovalPolicies = ["never", "untrusted"];
+
+    private int TargetWindowMinutes => ResolveTargetWindowMinutes(Config);
+
+    private string WindowLogPrefix => TargetWindowMinutes == FiveHourWindowMinutes
+        ? "codex-five-hour"
+        : "codex-weekly";
 
     public override async Task<InfoSample> ReadAsync(CancellationToken cancellationToken)
     {
@@ -32,11 +39,12 @@ internal sealed class CodexAppServerSource(SourceConfig config, JsonLog? log = n
             {
                 try
                 {
-                    var reading = await ReadQuotaAsync(candidate, approvalPolicy, cancellationToken, log);
-                    log?.Write("codex-weekly.read", new
+                    var reading = await ReadQuotaAsync(candidate, approvalPolicy, TargetWindowMinutes, cancellationToken, log);
+                    log?.Write($"{WindowLogPrefix}.read", new
                     {
                         candidate = SafeCandidateName(candidate),
                         approvalPolicy,
+                        window = WindowDescription(TargetWindowMinutes),
                         reading.RemainingPercent,
                         reading.UsedPercent,
                         reading.WindowDurationMinutes,
@@ -53,10 +61,11 @@ internal sealed class CodexAppServerSource(SourceConfig config, JsonLog? log = n
                 catch (Exception exception)
                 {
                     lastError = exception;
-                    log?.Write("codex-weekly.candidate.failed", new
+                    log?.Write($"{WindowLogPrefix}.candidate.failed", new
                     {
                         candidate = SafeCandidateName(candidate),
                         approvalPolicy,
+                        window = WindowDescription(TargetWindowMinutes),
                         error = SafeError(exception)
                     });
 
@@ -76,26 +85,32 @@ internal sealed class CodexAppServerSource(SourceConfig config, JsonLog? log = n
 
     internal static decimal ParseRemainingPercent(JsonElement result) => ParseQuotaReading(result).RemainingPercent;
 
+    internal static decimal ParseFiveHourRemainingPercent(JsonElement result) =>
+        ParseQuotaReading(result, FiveHourWindowMinutes).RemainingPercent;
+
     internal static CodexRateLimitReading ParseQuotaReading(JsonElement result)
+        => ParseQuotaReading(result, WeeklyWindowMinutes);
+
+    internal static CodexRateLimitReading ParseQuotaReading(JsonElement result, int targetWindowMinutes)
     {
         var snapshot = SelectRateLimitSnapshot(result);
-        var weekly = SelectWeeklyWindow(snapshot);
-        if (!TryDecimal(weekly, out var usedPercent, "usedPercent", "used_percent"))
+        var window = SelectWindow(snapshot, targetWindowMinutes);
+        if (!TryDecimal(window, out var usedPercent, "usedPercent", "used_percent"))
         {
-            if (!TryDecimal(weekly, out var remainingPercent, "remainingPercent", "remaining_percent"))
-                throw new InvalidDataException("Codex weekly window did not include usedPercent.");
+            if (!TryDecimal(window, out var remainingPercent, "remainingPercent", "remaining_percent"))
+                throw new InvalidDataException($"Codex {WindowDescription(targetWindowMinutes)} window did not include usedPercent.");
 
             usedPercent = 100M - remainingPercent;
         }
 
-        var duration = TryDecimal(weekly, out var windowDuration, "windowDurationMins", "window_duration_mins")
+        var duration = TryDecimal(window, out var windowDuration, "windowDurationMins", "window_duration_mins")
             ? windowDuration
             : 0M;
         return new CodexRateLimitReading(
             Math.Clamp(100M - usedPercent, 0M, 100M),
             usedPercent,
             duration,
-            Text(weekly, "resetsAt", "resets_at"),
+            Text(window, "resetsAt", "resets_at"),
             TextOrNull(snapshot, "limitId", "limit_id"),
             TextOrNull(snapshot, "planType", "plan_type"));
     }
@@ -103,6 +118,7 @@ internal sealed class CodexAppServerSource(SourceConfig config, JsonLog? log = n
     private static async Task<CodexRateLimitReading> ReadQuotaAsync(
         string command,
         string approvalPolicy,
+        int targetWindowMinutes,
         CancellationToken cancellationToken,
         JsonLog? log)
     {
@@ -143,25 +159,27 @@ internal sealed class CodexAppServerSource(SourceConfig config, JsonLog? log = n
             }
             catch (Exception exception)
             {
-                log?.Write("codex-weekly.account.read.error", new
+                log?.Write($"{WindowLogPrefixFor(targetWindowMinutes)}.account.read.error", new
                 {
                     candidate = SafeCandidateName(command),
                     approvalPolicy,
+                    window = WindowDescription(targetWindowMinutes),
                     error = SafeError(exception)
                 });
             }
 
-            if (!TryParseQuotaReading(rateLimitResult, out reading) &&
+            if (!TryParseQuotaReading(rateLimitResult, targetWindowMinutes, out reading) &&
                 ShouldRetryEmptyQuota(rateLimitResult, accountResult))
             {
                 await Task.Delay(300, cancellationToken);
                 var retryResult = await SendRequestAsync(
                     process, 4, "account/rateLimits/read", null, cancellationToken);
-                reading = ParseQuotaReading(retryResult);
+                reading = ParseQuotaReading(retryResult, targetWindowMinutes);
             }
             else if (reading is null)
             {
-                throw new InvalidDataException("Codex quota response did not include a usable weekly window.");
+                throw new InvalidDataException(
+                    $"Codex quota response did not include a usable {WindowDescription(targetWindowMinutes)} window.");
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -194,11 +212,14 @@ internal sealed class CodexAppServerSource(SourceConfig config, JsonLog? log = n
         return reading ?? throw new InvalidDataException("Codex App Server returned no quota reading.");
     }
 
-    private static bool TryParseQuotaReading(JsonElement result, out CodexRateLimitReading? reading)
+    private static bool TryParseQuotaReading(
+        JsonElement result,
+        int targetWindowMinutes,
+        out CodexRateLimitReading? reading)
     {
         try
         {
-            reading = ParseQuotaReading(result);
+            reading = ParseQuotaReading(result, targetWindowMinutes);
             return true;
         }
         catch (InvalidDataException)
@@ -337,7 +358,7 @@ internal sealed class CodexAppServerSource(SourceConfig config, JsonLog? log = n
         throw new InvalidDataException("Codex quota response did not include an unambiguous rate-limit window.");
     }
 
-    private static JsonElement SelectWeeklyWindow(JsonElement snapshot)
+    private static JsonElement SelectWindow(JsonElement snapshot, int targetWindowMinutes)
     {
         JsonElement? secondary = null;
         foreach (var name in new[] { "primary", "secondary" })
@@ -345,12 +366,42 @@ internal sealed class CodexAppServerSource(SourceConfig config, JsonLog? log = n
             var window = Property(snapshot, name);
             if (window is not { ValueKind: JsonValueKind.Object }) continue;
             if (name == "secondary") secondary = window;
-            if (TryDecimal(window.Value, out var minutes, "windowDurationMins", "window_duration_mins") &&
-                minutes >= WeeklyWindowMinutes)
-                return window.Value;
+            if (!TryDecimal(window.Value, out var minutes, "windowDurationMins", "window_duration_mins"))
+                continue;
+
+            var matches = targetWindowMinutes == WeeklyWindowMinutes
+                ? minutes >= WeeklyWindowMinutes
+                : minutes == targetWindowMinutes;
+            if (matches) return window.Value;
         }
-        return secondary ?? throw new InvalidDataException("Codex quota response did not include a weekly window.");
+
+        if (targetWindowMinutes == WeeklyWindowMinutes && secondary is not null)
+            return secondary.Value;
+
+        throw new InvalidDataException(
+            $"Codex quota response did not include a {WindowDescription(targetWindowMinutes)} window.");
     }
+
+    private static int ResolveTargetWindowMinutes(SourceConfig config)
+    {
+        if (config.WindowDurationMinutes is > 0)
+            return config.WindowDurationMinutes.Value;
+
+        return config.Type.Equals("codex-five-hour", StringComparison.OrdinalIgnoreCase) ||
+               config.Type.Equals("codex-5h", StringComparison.OrdinalIgnoreCase)
+            ? FiveHourWindowMinutes
+            : WeeklyWindowMinutes;
+    }
+
+    private static string WindowLogPrefixFor(int targetWindowMinutes) =>
+        targetWindowMinutes == FiveHourWindowMinutes ? "codex-five-hour" : "codex-weekly";
+
+    private static string WindowDescription(int targetWindowMinutes) => targetWindowMinutes switch
+    {
+        FiveHourWindowMinutes => "5h",
+        WeeklyWindowMinutes => "weekly",
+        _ => $"{targetWindowMinutes}-minute"
+    };
 
     private static bool HasWindows(JsonElement value) => value.ValueKind == JsonValueKind.Object &&
         (Property(value, "primary") is { ValueKind: JsonValueKind.Object } ||
