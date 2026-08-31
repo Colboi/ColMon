@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Text.Json;
 
 namespace Colmon;
@@ -14,6 +15,47 @@ internal static class Program
             ApplicationConfiguration.Initialize();
             using var font = new Font("Microsoft YaHei", 9F, FontStyle.Regular, GraphicsUnit.Point);
             var width = CodexWeeklyLayout.MeasureWindowWidth(font, 96, out var characterCellWidth);
+            using var optionsDialog = new TaskbarWindowOptionsDialog(new WindowOptions("Probe title", 30));
+            using var pomodoroOptionsDialog = new PomodoroOptionsDialog(new PomodoroOptions());
+            var pomodoro = new PomodoroTimer(new PomodoroOptions(), DateTimeOffset.UnixEpoch);
+            var pomodoroInitial = pomodoro.Snapshot(DateTimeOffset.UnixEpoch);
+            pomodoro.Start(DateTimeOffset.UnixEpoch);
+            var pomodoroStarted = pomodoro.Snapshot(DateTimeOffset.UnixEpoch);
+            pomodoro.Advance(DateTimeOffset.UnixEpoch.AddMinutes(25));
+            var pomodoroAfterWork = pomodoro.Snapshot(DateTimeOffset.UnixEpoch.AddMinutes(25));
+            pomodoro.SkipCurrentStage(DateTimeOffset.UnixEpoch.AddMinutes(26));
+            var pomodoroAfterSkip = pomodoro.Snapshot(DateTimeOffset.UnixEpoch.AddMinutes(26));
+            var manualRestPomodoro = new PomodoroTimer(
+                new PomodoroOptions(AutoRest: false), DateTimeOffset.UnixEpoch);
+            manualRestPomodoro.Start(DateTimeOffset.UnixEpoch);
+            manualRestPomodoro.Advance(DateTimeOffset.UnixEpoch.AddMinutes(25));
+            var autoRestDisabled = manualRestPomodoro.Snapshot(DateTimeOffset.UnixEpoch.AddMinutes(25));
+            var manualCyclePomodoro = new PomodoroTimer(
+                new PomodoroOptions(AutoNextCycle: false), DateTimeOffset.UnixEpoch);
+            manualCyclePomodoro.Start(DateTimeOffset.UnixEpoch);
+            manualCyclePomodoro.Advance(DateTimeOffset.UnixEpoch.AddMinutes(30));
+            var autoNextDisabled = manualCyclePomodoro.Snapshot(DateTimeOffset.UnixEpoch.AddMinutes(30));
+            var fourCyclePomodoro = new PomodoroTimer(new PomodoroOptions(), DateTimeOffset.UnixEpoch);
+            fourCyclePomodoro.Start(DateTimeOffset.UnixEpoch);
+            fourCyclePomodoro.Advance(DateTimeOffset.UnixEpoch.AddMinutes(120));
+            var afterFourCycles = fourCyclePomodoro.Snapshot(DateTimeOffset.UnixEpoch.AddMinutes(120));
+            var skippedWorkPomodoro = new PomodoroTimer(new PomodoroOptions(), DateTimeOffset.UnixEpoch);
+            skippedWorkPomodoro.SkipCurrentStage(DateTimeOffset.UnixEpoch.AddMinutes(1));
+            var afterSkippedWork = skippedWorkPomodoro.Snapshot(DateTimeOffset.UnixEpoch.AddMinutes(1));
+            var pauseResumePomodoro = new PomodoroTimer(new PomodoroOptions(), DateTimeOffset.UnixEpoch);
+            pauseResumePomodoro.Start(DateTimeOffset.UnixEpoch);
+            pauseResumePomodoro.Pause(DateTimeOffset.UnixEpoch.AddMinutes(1));
+            var afterPause = pauseResumePomodoro.Snapshot(DateTimeOffset.UnixEpoch.AddMinutes(2));
+            pauseResumePomodoro.Start(DateTimeOffset.UnixEpoch.AddMinutes(2));
+            var afterResume = pauseResumePomodoro.Snapshot(DateTimeOffset.UnixEpoch.AddMinutes(2));
+            var countCases = new long?[] { 0, 999, 1000, 1234567, null }
+                .Select(value => new { value, formatted = TaskbarCountDisplay.FormatNumber(value) });
+            var tokenFixture = JsonSerializer.Serialize(new
+            {
+                timestamp = DateTimeOffset.Now,
+                type = "event_msg",
+                payload = new { type = "token_count", info = new { last_token_usage = new { total_tokens = 1234 } } }
+            });
             var cases = new[] { "9.9%", "10%", "100%", "unavailable" }.Select(text =>
             {
                 var value = CodexWeeklyLayout.ParseRemainingPercent(text);
@@ -26,12 +68,51 @@ internal static class Program
                     color = ColorTranslator.ToHtml(CodexWeeklyLayout.ValueColor(value))
                 };
             });
+            var resetCases = new
+            {
+                fiveHour = CodexWeeklyLayout.FormatResetRemaining(
+                    DateTimeOffset.UnixEpoch.AddHours(2).AddMinutes(37), DateTimeOffset.UnixEpoch),
+                weekly = CodexWeeklyLayout.FormatResetRemaining(
+                    DateTimeOffset.UnixEpoch.AddDays(6).AddHours(18).AddMinutes(42), DateTimeOffset.UnixEpoch),
+                weeklyCompact = CodexWeeklyLayout.FormatResetRemaining(
+                    DateTimeOffset.UnixEpoch.AddDays(6).AddHours(18).AddMinutes(42), DateTimeOffset.UnixEpoch,
+                    compact: true),
+                minutesOnly = CodexWeeklyLayout.FormatResetRemaining(
+                    DateTimeOffset.UnixEpoch.AddMinutes(15), DateTimeOffset.UnixEpoch),
+                expired = CodexWeeklyLayout.FormatResetRemaining(
+                    DateTimeOffset.UnixEpoch.AddSeconds(-1), DateTimeOffset.UnixEpoch),
+                unavailable = CodexWeeklyLayout.FormatResetRemaining(null, DateTimeOffset.UnixEpoch)
+            };
             Console.WriteLine(JsonSerializer.Serialize(new
             {
                 dpi = 96,
                 characterColumns = CodexWeeklyLayout.CharacterColumns,
                 characterCellWidth,
                 pixelWidth = width,
+                optionsDialog = optionsDialog.SnapshotForDiagnostics(),
+                pomodoro = new
+                {
+                    defaultOptions = new PomodoroOptions(),
+                    optionsDialog = pomodoroOptionsDialog.SnapshotForDiagnostics(),
+                    formattedTime = TaskbarPomodoroDisplay.FormatTime(TimeSpan.FromMinutes(25)),
+                    dots = Enumerable.Range(0, 5).Select(TaskbarPomodoroDisplay.FormatDots),
+                    initial = pomodoroInitial,
+                    started = pomodoroStarted,
+                    afterWork = pomodoroAfterWork,
+                    afterSkip = pomodoroAfterSkip,
+                    autoRestDisabled,
+                    autoNextDisabled,
+                    afterFourCycles,
+                    afterSkippedWork,
+                    afterPause,
+                    afterResume
+                },
+                countCases,
+                tokenTodayParser = new
+                {
+                    today = CodexTokenTodaySource.ParseTokenEvent(tokenFixture, DateOnly.FromDateTime(DateTime.Today)),
+                    yesterday = CodexTokenTodaySource.ParseTokenEvent(tokenFixture, DateOnly.FromDateTime(DateTime.Today.AddDays(-1)))
+                },
                 cases,
                 placementCases = new
                 {
@@ -54,8 +135,12 @@ internal static class Program
                         """),
                     alternateRemaining = ParseCodexFixture("""
                         {"rateLimitsByLimitId":{"other":{"secondary":{"usedPercent":25,"windowDurationMins":10080}}}}
-                        """)
+                        """),
+                    fiveHourRemaining = ParseCodexFixture("""
+                        {"rateLimits":{"primary":{"usedPercent":27,"windowDurationMins":300},"secondary":{"usedPercent":40,"windowDurationMins":10080}}}
+                        """, CodexAppServerSource.FiveHourWindowMinutes)
                 },
+                resetCases,
                 staleCases = new
                 {
                     recentValueRetained = SourceCoordinator.ShouldRetain(
@@ -93,6 +178,33 @@ internal static class Program
                 percentageText = CodexWeeklyLayout.FormatRemainingPercent(value),
                 elapsedMilliseconds = Stopwatch.GetElapsedTime(started).TotalMilliseconds,
                 candidateCount = CodexCommandLocator.Find(null).Count
+            }, JsonDefaults.Indented));
+            return 0;
+        }
+
+        if (options.TokensTodayProbe)
+        {
+            Directory.CreateDirectory(options.ArtifactDirectory);
+            using var probeLog = new JsonLog(Path.Combine(options.ArtifactDirectory, "tokens-today-probe.jsonl"));
+            using var source = new CodexTokenTodaySource(new SourceConfig
+            {
+                Name = "codex-tokens-today",
+                Type = "codex-token-today",
+                DataPath = options.TokensDataPath,
+                TimeoutMilliseconds = 60_000,
+                StaleAfterMilliseconds = 600_000
+            }, probeLog);
+            var started = Stopwatch.GetTimestamp();
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(65));
+            var sample = source.ReadAsync(timeout.Token).GetAwaiter().GetResult();
+            Console.WriteLine(JsonSerializer.Serialize(new
+            {
+                ok = long.TryParse(sample.Text.TrimStart('~'), NumberStyles.Integer,
+                    CultureInfo.InvariantCulture, out _),
+                text = sample.Text,
+                stale = sample.IsStale,
+                error = sample.Error,
+                elapsedMilliseconds = Stopwatch.GetElapsedTime(started).TotalMilliseconds
             }, JsonDefaults.Indented));
             return 0;
         }
@@ -139,10 +251,21 @@ internal static class Program
                 ? new SourceCoordinator([tokenTodaySource], log, config.Separator)
                 : null;
             using var context = new ColmonApplicationContext(log);
-            context.RegisterTaskbarWindow(new TaskbarHostForm(config, coordinator, options.ArtifactDirectory, log));
+            var windowOptionsPath = options.ControlSmoke
+                ? Path.Combine(options.ArtifactDirectory, "codex-weekly.options.json")
+                : null;
+            context.RegisterTaskbarWindow(new TaskbarHostForm(
+                config,
+                coordinator,
+                options.ArtifactDirectory,
+                log,
+                windowOptionsPath));
             var nextSlotIndex = 1;
             if (fiveHourCoordinator is not null)
             {
+                var fiveHourOptionsPath = options.ControlSmoke
+                    ? Path.Combine(options.ArtifactDirectory, "codex-five-hour.options.json")
+                    : null;
                 context.RegisterTaskbarWindow(new TaskbarCodexLimitHostForm(
                     config.CodexFiveHourTitle,
                     config.OffsetX,
@@ -151,10 +274,14 @@ internal static class Program
                     fiveHourCoordinator,
                     nextSlotIndex++,
                     options.ArtifactDirectory,
-                    log));
+                    log,
+                    fiveHourOptionsPath));
             }
             if (tokenTodayCoordinator is not null)
             {
+                var tokenOptionsPath = options.ControlSmoke
+                    ? Path.Combine(options.ArtifactDirectory, "codex-tokens-today.options.json")
+                    : null;
                 context.RegisterTaskbarWindow(new TaskbarCountHostForm(
                     config.TokensTodayTitle,
                     config.OffsetX,
@@ -163,10 +290,14 @@ internal static class Program
                     tokenTodayCoordinator,
                     nextSlotIndex++,
                     options.ArtifactDirectory,
-                    log));
+                    log,
+                    tokenOptionsPath));
             }
             if (config.ShowPomodoro)
             {
+                var pomodoroStatePath = options.ControlSmoke
+                    ? Path.Combine(options.ArtifactDirectory, "pomodoro.options.json")
+                    : null;
                 context.RegisterTaskbarWindow(new TaskbarPomodoroHostForm(
                     config.OffsetX,
                     config.OffsetY,
@@ -177,7 +308,8 @@ internal static class Program
                         config.PomodoroRestMinutes),
                     nextSlotIndex,
                     options.ArtifactDirectory,
-                    log));
+                    log,
+                    pomodoroStatePath));
             }
             coordinator.Start();
             fiveHourCoordinator?.Start();
@@ -194,10 +326,12 @@ internal static class Program
         }
     }
 
-    private static decimal ParseCodexFixture(string json)
+    private static decimal ParseCodexFixture(string json, int? targetWindowMinutes = null)
     {
         using var document = JsonDocument.Parse(json);
-        return CodexAppServerSource.ParseRemainingPercent(document.RootElement);
+        return targetWindowMinutes is null
+            ? CodexAppServerSource.ParseRemainingPercent(document.RootElement)
+            : CodexAppServerSource.ParseQuotaReading(document.RootElement, targetWindowMinutes.Value).RemainingPercent;
     }
 }
 
@@ -207,7 +341,9 @@ internal sealed record AppOptions(
     bool ProbeOnly,
     bool ControlSmoke,
     bool LayoutProbe,
-    bool CodexProbe)
+    bool CodexProbe,
+    bool TokensTodayProbe,
+    string? TokensDataPath)
 {
     public static AppOptions Parse(string[] args)
     {
@@ -221,6 +357,8 @@ internal sealed record AppOptions(
         var controlSmoke = false;
         var layoutProbe = false;
         var codexProbe = false;
+        var tokensTodayProbe = false;
+        string? tokensDataPath = null;
 
         for (var index = 0; index < args.Length; index++)
         {
@@ -244,10 +382,17 @@ internal sealed record AppOptions(
                 case "--codex-probe":
                     codexProbe = true;
                     break;
+                case "--tokens-today-probe":
+                    tokensTodayProbe = true;
+                    break;
+                case "--tokens-data-path" when index + 1 < args.Length:
+                    tokensDataPath = Path.GetFullPath(args[++index]);
+                    break;
             }
         }
 
-        return new AppOptions(config, artifactDirectory, probe, controlSmoke, layoutProbe, codexProbe);
+        return new AppOptions(config, artifactDirectory, probe, controlSmoke, layoutProbe, codexProbe,
+            tokensTodayProbe, tokensDataPath);
     }
 }
 

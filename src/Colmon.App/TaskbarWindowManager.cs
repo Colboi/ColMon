@@ -13,6 +13,8 @@ internal sealed class TaskbarWindowManager : IDisposable
     public int WindowCount => _windows.Count(window => !window.IsDisposed);
     public int VisibleCount => _windows.Count(window => !window.IsDisposed && window.Visible);
     public bool AllVisible => WindowCount > 0 && VisibleCount == WindowCount;
+    public IReadOnlyList<Form> RegisteredWindows =>
+        _windows.Where(window => !window.IsDisposed).ToArray();
 
     public void Register(Form window)
     {
@@ -46,6 +48,21 @@ internal sealed class TaskbarWindowManager : IDisposable
     }
 
     public void ToggleAll() => SetAllVisible(!AllVisible);
+
+    public void SetVisible(Form window, bool visible)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentNullException.ThrowIfNull(window);
+        if (!_windows.Contains(window) || window.IsDisposed) return;
+        if (window.Visible == visible)
+        {
+            RaiseVisibilityChanged();
+            return;
+        }
+
+        if (visible) window.Show();
+        else window.Hide();
+    }
 
     public void SetAllVisible(bool visible)
     {

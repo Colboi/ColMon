@@ -52,7 +52,19 @@ internal sealed class CodexAppServerSource(SourceConfig config, JsonLog? log = n
                         reading.LimitId,
                         reading.PlanType
                     });
-                    return Sample(reading.RemainingPercent.ToString("0.###", CultureInfo.InvariantCulture) + "%");
+                    var resetAt = ParseResetAt(reading.ResetAt);
+                    if (!string.IsNullOrWhiteSpace(reading.ResetAt) && resetAt is null)
+                    {
+                        log?.Write($"{WindowLogPrefix}.reset.invalid", new
+                        {
+                            candidate = SafeCandidateName(candidate),
+                            approvalPolicy,
+                            window = WindowDescription(TargetWindowMinutes)
+                        });
+                    }
+                    return Sample(
+                        reading.RemainingPercent.ToString("0.###", CultureInfo.InvariantCulture) + "%",
+                        resetAt);
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
@@ -115,6 +127,35 @@ internal sealed class CodexAppServerSource(SourceConfig config, JsonLog? log = n
             TextOrNull(snapshot, "planType", "plan_type"));
     }
 
+    internal static DateTimeOffset? ParseResetAt(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text) || text.Equals("null", StringComparison.OrdinalIgnoreCase))
+            return null;
+
+        if (long.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var unixTimestamp))
+        {
+            try
+            {
+                return unixTimestamp >= 1_000_000_000_000L
+                    ? DateTimeOffset.FromUnixTimeMilliseconds(unixTimestamp)
+                    : DateTimeOffset.FromUnixTimeSeconds(unixTimestamp);
+            }
+            catch (ArgumentOutOfRangeException)
+            {
+                return null;
+            }
+        }
+
+        if (DateTimeOffset.TryParse(
+                text,
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
+                out var parsed))
+            return parsed;
+
+        return null;
+    }
+
     private static async Task<CodexRateLimitReading> ReadQuotaAsync(
         string command,
         string approvalPolicy,
@@ -142,7 +183,7 @@ internal sealed class CodexAppServerSource(SourceConfig config, JsonLog? log = n
             process.StandardInput.AutoFlush = true;
             await SendRequestAsync(process, 1, "initialize", new
             {
-                clientInfo = new { name = "colmon", title = "Colmon", version = "0.1.0" }
+                clientInfo = new { name = "colmon", title = "Colmon", version = "0.2.2" }
             }, cancellationToken);
             await SendNotificationAsync(process, "initialized", new { }, cancellationToken);
 

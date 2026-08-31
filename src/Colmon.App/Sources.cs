@@ -4,7 +4,12 @@ using System.Text.Json;
 
 namespace Colmon;
 
-internal sealed record InfoSample(string Text, DateTimeOffset CapturedAt, string? Error = null, bool IsStale = false);
+internal sealed record InfoSample(
+    string Text,
+    DateTimeOffset CapturedAt,
+    string? Error = null,
+    bool IsStale = false,
+    DateTimeOffset? ResetAt = null);
 
 internal interface IInfoSource : IDisposable
 {
@@ -24,7 +29,8 @@ internal abstract class InfoSource(SourceConfig config) : IInfoSource
     public TimeSpan StaleAfter => TimeSpan.FromMilliseconds(Math.Clamp(Config.StaleAfterMilliseconds, 1000, 3_600_000));
     public abstract Task<InfoSample> ReadAsync(CancellationToken cancellationToken);
     public virtual void Dispose() { }
-    protected InfoSample Sample(string value) => new($"{Config.Prefix}{value}", DateTimeOffset.Now);
+    protected InfoSample Sample(string value, DateTimeOffset? resetAt = null) =>
+        new($"{Config.Prefix}{value}", DateTimeOffset.Now, ResetAt: resetAt);
 }
 
 internal sealed class ClockSource(SourceConfig config) : InfoSource(config)
@@ -84,6 +90,7 @@ internal sealed class SourceCoordinator : IDisposable
     private TimeSpan? _pollIntervalOverride;
 
     public event Action<string>? TextChanged;
+    public event Action<InfoSample>? SampleChanged;
 
     public TimeSpan PollInterval
     {
@@ -179,8 +186,27 @@ internal sealed class SourceCoordinator : IDisposable
 
     private void Publish()
     {
-        var parts = _sources.Select(source => _latest.TryGetValue(source.Name, out var sample) ? sample.Text : $"… {source.Name}");
-        TextChanged?.Invoke(string.Join(_separator, parts));
+        var samples = _sources
+            .Select(source => _latest.TryGetValue(source.Name, out var sample) ? sample : null)
+            .ToArray();
+        var text = string.Join(_separator, _sources.Select((source, index) =>
+            samples[index]?.Text ?? $"… {source.Name}"));
+        var error = string.Join("; ", samples.Where(sample => !string.IsNullOrWhiteSpace(sample?.Error))
+            .Select(sample => sample!.Error));
+
+        var combined = samples.Length == 1 && samples[0] is { } single
+            ? single with { Text = text }
+            : new InfoSample(
+                text,
+                samples.Where(sample => sample is not null)
+                    .Select(sample => sample!.CapturedAt)
+                    .DefaultIfEmpty(DateTimeOffset.Now)
+                    .Max(),
+                string.IsNullOrWhiteSpace(error) ? null : error,
+                samples.Any(sample => sample?.IsStale == true));
+
+        SampleChanged?.Invoke(combined);
+        TextChanged?.Invoke(text);
     }
 
     internal static bool ShouldRetain(InfoSample previous, DateTimeOffset now, TimeSpan staleAfter) =>

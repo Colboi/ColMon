@@ -8,7 +8,7 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <RootNamespace>Colmon</RootNamespace>
     <AssemblyName>Colmon</AssemblyName>
-    <Version>0.2.1</Version>
+    <Version>0.2.2</Version>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Assets\colmon.ico</ApplicationIcon>
   </PropertyGroup>

@@ -60,6 +60,8 @@ internal sealed partial class TaskbarCountDisplay : Control, ITaskbarMetricView
             CultureInfo.InvariantCulture, out var value) ? value : null;
     }
 
+    public void SetSourceSample(InfoSample sample) => SetSourceText(sample.Text);
+
     public object Snapshot(int characterCellWidth, int pixelWidth, int refreshIntervalSeconds) => new
     {
         title = Title,

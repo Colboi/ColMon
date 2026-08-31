@@ -73,4 +73,15 @@ internal sealed class TaskbarWindowOptionsDialog : Form
     public WindowOptions Options =>
         new WindowOptions(_titleBox.Text, Decimal.ToInt32(_refreshInterval.Value)).Normalize();
 
+    internal object SnapshotForDiagnostics() => new
+    {
+        title = Text,
+        titleValue = _titleBox.Text,
+        refreshValue = Decimal.ToInt32(_refreshInterval.Value),
+        refreshMinimum = Decimal.ToInt32(_refreshInterval.Minimum),
+        refreshMaximum = Decimal.ToInt32(_refreshInterval.Maximum),
+        hasOkButton = AcceptButton is Button { DialogResult: DialogResult.OK },
+        hasCancelButton = CancelButton is Button { DialogResult: DialogResult.Cancel }
+    };
+
 }

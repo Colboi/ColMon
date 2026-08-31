@@ -6,6 +6,7 @@ namespace Colmon;
 internal static partial class CodexWeeklyLayout
 {
     public const int CharacterColumns = 15;
+    public const int ThreeLineHeight = 42;
     public const decimal LowRemainingThreshold = 10M;
     public const string Title = "Codex weekly";
 
@@ -27,6 +28,46 @@ internal static partial class CodexWeeklyLayout
     public static bool IsLow(decimal? value) => value is >= 0M and < LowRemainingThreshold;
 
     public static Color ValueColor(decimal? value) => IsLow(value) ? LowColor : NormalColor;
+
+    public static long? ResetRemainingSeconds(
+        DateTimeOffset? resetAt,
+        DateTimeOffset now,
+        bool isStale = false)
+    {
+        if (isStale || resetAt is null) return null;
+        return Math.Max(0L, (long)Math.Ceiling((resetAt.Value - now).TotalSeconds));
+    }
+
+    public static string FormatResetRemaining(
+        DateTimeOffset? resetAt,
+        DateTimeOffset now,
+        bool isStale = false,
+        bool compact = false)
+    {
+        var seconds = ResetRemainingSeconds(resetAt, now, isStale);
+        if (seconds is null) return "--";
+        if (seconds <= 0) return "0m";
+
+        var totalMinutes = Math.Max(1L, (long)Math.Ceiling(seconds.Value / 60D));
+        var days = totalMinutes / (24 * 60);
+        var hours = totalMinutes / 60 % 24;
+        var minutes = totalMinutes % 60;
+        if (days > 0)
+        {
+            if (compact) return hours > 0 ? $"{days}d {hours}h" : $"{days}d";
+            return FormatUnits(($"{days}d", days), ($"{hours}h", hours), ($"{minutes}m", minutes));
+        }
+
+        if (hours > 0)
+        {
+            return FormatUnits(($"{hours}h", hours), ($"{minutes}m", minutes));
+        }
+
+        return $"{minutes}m";
+    }
+
+    private static string FormatUnits(params (string Text, long Value)[] units) =>
+        string.Join(" ", units.Where(unit => unit.Value > 0).Select(unit => unit.Text));
 
     public static int MeasureWindowWidth(Font font, uint dpi, out int characterCellWidth)
     {

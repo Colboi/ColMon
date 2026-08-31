@@ -17,7 +17,8 @@ internal sealed class TaskbarPomodoroHostForm : TaskbarMetricForm
         PomodoroOptions defaults,
         int slotIndex,
         string artifactDirectory,
-        JsonLog log)
+        JsonLog log,
+        string? stateStorePath = null)
         : base(
             "pomodoro",
             "Pomodoro",
@@ -29,10 +30,11 @@ internal sealed class TaskbarPomodoroHostForm : TaskbarMetricForm
             1,
             null,
             artifactDirectory,
-            log)
+            log,
+            (stateStorePath ?? PomodoroStore.DefaultPath) + ".window")
     {
         _display = (TaskbarPomodoroDisplay)View.Control;
-        _store = new PomodoroStore(PomodoroStore.DefaultPath, log);
+        _store = new PomodoroStore(stateStorePath ?? PomodoroStore.DefaultPath, log);
         var saved = _store.Load();
         _pomodoro = new PomodoroTimer(saved?.Options ?? defaults, DateTimeOffset.Now);
 
@@ -50,6 +52,32 @@ internal sealed class TaskbarPomodoroHostForm : TaskbarMetricForm
 
         UpdateDisplay(DateTimeOffset.Now, persistState: true);
     }
+
+    internal PomodoroOptions PomodoroOptionsForDiagnostics => _pomodoro.Options;
+    internal PomodoroSnapshot PomodoroSnapshotForDiagnostics => _pomodoro.Snapshot(DateTimeOffset.Now);
+    internal bool HasPomodoroMenuCommandsForDiagnostics =>
+        WindowMenuItemsForDiagnostics.SequenceEqual([
+            _pomodoro.Snapshot(DateTimeOffset.Now).IsRunning ? "暂停" : "启动",
+            "复原至初始",
+            "复原至该阶段起始",
+            "跳过该阶段",
+            "窗口选项",
+            "隐藏该窗口",
+            "关闭该窗口"]);
+    internal string RunStateMenuTextForDiagnostics => _runStateItem.Text ?? string.Empty;
+    internal string RunStateActionForDiagnostics =>
+        _pomodoro.Snapshot(DateTimeOffset.Now).IsRunning ? "pause" : "start";
+
+    internal void ApplyPomodoroOptionsForDiagnostics(PomodoroOptions options, bool persist = false)
+    {
+        _pomodoro.ApplyOptions(options, DateTimeOffset.Now);
+        UpdateDisplay(DateTimeOffset.Now, persist);
+    }
+
+    internal void PerformResetInitialForDiagnostics() => _resetInitialItem.PerformClick();
+    internal void PerformResetStageForDiagnostics() => _resetStageItem.PerformClick();
+    internal void PerformSkipStageForDiagnostics() => _skipStageItem.PerformClick();
+    internal void PerformRunStateCommandForDiagnostics() => _runStateItem.PerformClick();
 
     protected override void OnLoad(EventArgs eventArgs)
     {

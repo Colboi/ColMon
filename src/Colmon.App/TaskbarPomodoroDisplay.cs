@@ -56,6 +56,7 @@ internal sealed class TaskbarPomodoroDisplay : Control, ITaskbarMetricView
     int ITaskbarMetricView.CharacterColumns => DefaultCharacterColumns;
     int ITaskbarMetricView.LogicalHeight => 42;
     void ITaskbarMetricView.SetSourceText(string text) { }
+    void ITaskbarMetricView.SetSourceSample(InfoSample sample) { }
 
     public object Snapshot(int characterCellWidth, int pixelWidth, int refreshIntervalSeconds) => new
     {

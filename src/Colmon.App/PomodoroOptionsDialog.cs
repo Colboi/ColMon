@@ -72,6 +72,18 @@ internal sealed class PomodoroOptionsDialog : Form
         Decimal.ToInt32(_workMinutes.Value),
         Decimal.ToInt32(_restMinutes.Value));
 
+    internal object SnapshotForDiagnostics() => new
+    {
+        autoRest = _autoRest.Checked,
+        autoNextCycle = _autoNextCycle.Checked,
+        workMinutes = Decimal.ToInt32(_workMinutes.Value),
+        restMinutes = Decimal.ToInt32(_restMinutes.Value),
+        minimumMinutes = Decimal.ToInt32(_workMinutes.Minimum),
+        maximumMinutes = Decimal.ToInt32(_workMinutes.Maximum),
+        hasOkButton = AcceptButton is Button { DialogResult: DialogResult.OK },
+        hasCancelButton = CancelButton is Button { DialogResult: DialogResult.Cancel }
+    };
+
     private static NumericUpDown CreateMinutesInput() => new()
     {
         Minimum = PomodoroOptions.MinimumMinutes,

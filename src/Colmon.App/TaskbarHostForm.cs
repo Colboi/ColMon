@@ -40,7 +40,8 @@ internal abstract class TaskbarMetricForm : Form
         int initialRefreshSeconds,
         SourceCoordinator? coordinator,
         string artifactDirectory,
-        JsonLog log)
+        JsonLog log,
+        string? windowOptionsPath = null)
     {
         _windowId = windowId;
         _offsetX = offsetX;
@@ -50,7 +51,7 @@ internal abstract class TaskbarMetricForm : Form
         _coordinator = coordinator;
         _statePath = Path.Combine(artifactDirectory, stateFileName);
         _log = log;
-        _optionsStore = new WindowOptionsStore(WindowOptionsStore.DefaultPath(windowId), log);
+        _optionsStore = new WindowOptionsStore(windowOptionsPath ?? WindowOptionsStore.DefaultPath(windowId), log);
         _options = _optionsStore.Load(new WindowOptions(defaultTitle, initialRefreshSeconds));
 
         FormBorderStyle = FormBorderStyle.None;
@@ -94,7 +95,7 @@ internal abstract class TaskbarMetricForm : Form
         if (_coordinator is not null)
         {
             _coordinator.SetPollInterval(TimeSpan.FromSeconds(_options.RefreshIntervalSeconds));
-            _coordinator.TextChanged += OnTextChanged;
+            _coordinator.SampleChanged += OnSampleChanged;
         }
         _recoveryTimer.Tick += (_, _) => AttachAndPlace("recovery-timer");
     }
@@ -118,17 +119,17 @@ internal abstract class TaskbarMetricForm : Form
         _recoveryTimer.Start();
     }
 
-    private void OnTextChanged(string text)
+    private void OnSampleChanged(InfoSample sample)
     {
         if (IsDisposed) return;
         if (InvokeRequired)
         {
-            BeginInvoke(() => OnTextChanged(text));
+            BeginInvoke(() => OnSampleChanged(sample));
             return;
         }
 
-        _sourceText = text;
-        _view.SetSourceText(text);
+        _sourceText = sample.Text;
+        _view.SetSourceSample(sample);
         AttachAndPlace("data-change");
     }
 
@@ -164,9 +165,20 @@ internal abstract class TaskbarMetricForm : Form
         _view.Control.Invalidate();
     }
 
+    internal void ApplyOptionsForDiagnostics(WindowOptions options, bool persist = false) => ApplyOptions(options, persist);
+    internal void PerformHideCommandForDiagnostics() => _hideItem.PerformClick();
+    internal void PerformCloseCommandForDiagnostics() => _closeItem.PerformClick();
+    internal IReadOnlyList<string> WindowMenuItemsForDiagnostics =>
+        _windowMenu.Items.OfType<ToolStripItem>().Select(item => item.Text ?? "").Where(text => text.Length > 0).ToArray();
+    internal WindowOptions OptionsForDiagnostics => _options;
+    internal bool HasRequiredWindowMenuCommandsForDiagnostics =>
+        _optionsItem.Text == "窗口选项" && _hideItem.Text == "隐藏该窗口" && _closeItem.Text == "关闭该窗口";
+
     protected ContextMenuStrip WindowMenu => _windowMenu;
     protected JsonLog Log => _log;
     protected string WindowId => _windowId;
+    internal string WindowIdForTray => _windowId;
+    internal string WindowTitleForTray => _view.Title;
     protected ITaskbarMetricView View => _view;
     protected void RefreshPlacement(string reason) => AttachAndPlace(reason);
 
@@ -285,7 +297,7 @@ internal abstract class TaskbarMetricForm : Form
         {
             _recoveryTimer.Stop();
             _recoveryTimer.Dispose();
-            if (_coordinator is not null) _coordinator.TextChanged -= OnTextChanged;
+            if (_coordinator is not null) _coordinator.SampleChanged -= OnSampleChanged;
             _windowMenu.Dispose();
         }
         base.Dispose(disposing);
@@ -298,7 +310,8 @@ internal sealed class TaskbarHostForm : TaskbarMetricForm
         AppConfig config,
         SourceCoordinator coordinator,
         string artifactDirectory,
-        JsonLog log)
+        JsonLog log,
+        string? windowOptionsPath = null)
         : base(
             config.Sources.FirstOrDefault()?.Name ?? "codex-weekly",
             config.Title,
@@ -310,7 +323,8 @@ internal sealed class TaskbarHostForm : TaskbarMetricForm
             config.Sources.Count == 0 ? 60 : Math.Max(1, config.Sources.Min(source => source.PollMilliseconds) / 1000),
             coordinator,
             artifactDirectory,
-            log)
+            log,
+            windowOptionsPath)
     {
     }
 }
@@ -325,7 +339,8 @@ internal sealed class TaskbarCountHostForm : TaskbarMetricForm
         SourceCoordinator coordinator,
         int slotIndex,
         string artifactDirectory,
-        JsonLog log)
+        JsonLog log,
+        string? windowOptionsPath = null)
         : base(
             source.Name,
             title,
@@ -337,7 +352,8 @@ internal sealed class TaskbarCountHostForm : TaskbarMetricForm
             Math.Max(1, source.PollMilliseconds / 1000),
             coordinator,
             artifactDirectory,
-            log)
+            log,
+            windowOptionsPath)
     {
     }
 }
@@ -352,7 +368,8 @@ internal sealed class TaskbarCodexLimitHostForm : TaskbarMetricForm
         SourceCoordinator coordinator,
         int slotIndex,
         string artifactDirectory,
-        JsonLog log)
+        JsonLog log,
+        string? windowOptionsPath = null)
         : base(
             source.Name,
             title,
@@ -364,7 +381,8 @@ internal sealed class TaskbarCodexLimitHostForm : TaskbarMetricForm
             Math.Max(1, source.PollMilliseconds / 1000),
             coordinator,
             artifactDirectory,
-            log)
+            log,
+            windowOptionsPath)
     {
     }
 }
