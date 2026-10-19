@@ -1,5 +1,7 @@
 # Colmon
 
+_本项目已暂停维护。_
+
 Windows 11 任务栏信息宿主。当前版本使用 .NET 10 WinForms/GDI，默认通过本机 Codex App Server 显示 weekly 与 5h limit 剩余额度，并支持时钟、HTTP/JSON 和 TCP 行协议数据源。
 
 应用使用紫罗兰色 C/M 组合图标。Windows 多尺寸资源位于 `src/Colmon.App/Assets/colmon.ico`；构建时 ICO 会嵌入 EXE，并由通知栏图标显式加载。
